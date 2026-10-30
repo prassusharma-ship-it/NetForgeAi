@@ -1,0 +1,62 @@
+"# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (large binary files - use Git LFS or regenerate)
+ml/*.joblib
+ml/*.pkl
+
+# Data files (can be regenerated)
+data/traffic.csv
+log_pipeline/log_features.csv
+log_pipeline/sample_auth.log
+log_pipeline/raw_logs/
+url_pipeline/url_features.csv
+
+# Logs
+*.log
+log_pipeline/*.log
+
+# Config with secrets
+log_pipeline/config.py
+
+# Docker
+.docker/
+
+# Local development
+*.pid
+*.pid.lock
+"

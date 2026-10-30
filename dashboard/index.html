@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI Network Attack Forecasting - Live Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --line: #1e2632; --text: #e6edf3;
+    --muted: #8b98a5; --accent: #4fa3ff; --danger: #ff5c5c; --ok: #38c172;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .trend-rising { color: var(--danger); }
+  .trend-stable { color: var(--ok); }
+  .trend-falling { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .sev-high { color: var(--danger); font-weight: 600; }
+  .sev-med { color: #ffb454; }
+  .sev-low { color: var(--muted); }
+  .conn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .conn-on { background: var(--ok); } .conn-off { background: var(--danger); }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+</style>
+</head>
+<body>
+
+<h1>AI Network Attack Forecasting</h1>
+<div class="sub"><span id="connDot" class="conn-dot conn-off"></span><span id="connStatus">connecting...</span></div>
+
+<div class="stats-row">
+  <div class="stat"><div class="label">Total Flows Scored</div><div class="value" id="statFlows">0</div></div>
+  <div class="stat"><div class="label">Total Alerts</div><div class="value" id="statAlerts">0</div></div>
+  <div class="stat"><div class="label">Attack Rate</div><div class="value" id="statRate">0%</div></div>
+  <div class="stat"><div class="label">Risk Trend</div><div class="value" id="statTrend">-</div></div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Live Traffic Severity</h2>
+    <canvas id="chart" height="110"></canvas>
+  </div>
+  <div class="panel">
+    <h2>Top Offending IPs</h2>
+    <table id="topIpTable"><thead><tr><th>Source IP</th><th>Alerts</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2>Check a URL</h2>
+  <div style="display:flex; gap:8px; margin-bottom:12px;">
+    <input id="urlInput" type="text" placeholder="https://example.com"
+      style="flex:1; background:#0b0f14; border:1px solid var(--line); color:var(--text); padding:8px 10px; border-radius:6px;">
+    <button onclick="checkUrl()"
+      style="background:var(--accent); border:none; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Analyze</button>
+  </div>
+  <div id="urlResult" style="font-size:13px; color:var(--muted);">Enter a URL and click Analyze.</div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2>Recent Alerts</h2>
+  <table id="alertTable">
+    <thead><tr><th>Time</th><th>Src IP</th><th>Severity</th><th>Duration(ms)</th><th>Pkt Rate</th><th>Dst Ports</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const BACKEND_HTTP = "http://localhost:8000";
+const BACKEND_WS = "ws://localhost:8000/ws/live";
+
+const ctx = document.getElementById('chart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: [], datasets: [{
+      label: 'Severity score', data: [],
+      borderColor: '#4fa3ff', backgroundColor: 'rgba(79,163,255,0.15)',
+      tension: 0.25, pointRadius: 0, fill: true,
+  }]},
+  options: {
+    animation: false,
+    scales: {
+      x: { display: false },
+      y: { min: 0, max: 1, grid: { color: '#1e2632' }, ticks: { color: '#8b98a5' } }
+    },
+    plugins: { legend: { display: false } }
+  }
+});
+
+const MAX_POINTS = 60;
+function pushChartPoint(severity) {
+  chart.data.labels.push('');
+  chart.data.datasets[0].data.push(severity);
+  if (chart.data.labels.length > MAX_POINTS) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.update('none');
+}
+
+function sevClass(s) { return s > 0.66 ? 'sev-high' : s > 0.33 ? 'sev-med' : 'sev-low'; }
+
+function addAlertRow(ev) {
+  const tbody = document.querySelector('#alertTable tbody');
+  const row = document.createElement('tr');
+  const t = new Date(ev.timestamp).toLocaleTimeString();
+  row.innerHTML = `<td>${t}</td><td>${ev.src_ip}</td>
+    <td class="${sevClass(ev.severity)}">${ev.severity.toFixed(2)}</td>
+    <td>${ev.duration_ms.toFixed(0)}</td>
+    <td>${ev.packet_rate.toFixed(0)}</td>
+    <td>${ev.unique_dst_ports}</td>`;
+  tbody.prepend(row);
+  while (tbody.rows.length > 15) tbody.deleteRow(-1);
+}
+
+function setTrend(trend) {
+  const el = document.getElementById('statTrend');
+  el.textContent = trend;
+  el.className = 'value trend-' + trend;
+}
+
+async function refreshStats() {
+  try {
+    const res = await fetch(BACKEND_HTTP + '/stats');
+    const s = await res.json();
+    document.getElementById('statFlows').textContent = s.total_flows;
+    document.getElementById('statAlerts').textContent = s.total_alerts;
+    document.getElementById('statRate').textContent = (s.attack_rate * 100).toFixed(1) + '%';
+
+    const tbody = document.querySelector('#topIpTable tbody');
+    tbody.innerHTML = '';
+    s.top_offenders.forEach(o => {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${o.ip}</td><td>${o.count}</td>`;
+      tbody.appendChild(row);
+    });
+  } catch (e) { /* backend not up yet */ }
+}
+
+function connect() {
+  const ws = new WebSocket(BACKEND_WS);
+  ws.onopen = () => {
+    document.getElementById('connDot').className = 'conn-dot conn-on';
+    document.getElementById('connStatus').textContent = 'live';
+  };
+  ws.onclose = () => {
+    document.getElementById('connDot').className = 'conn-dot conn-off';
+    document.getElementById('connStatus').textContent = 'disconnected - retrying...';
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = (msg) => {
+    const payload = JSON.parse(msg.data);
+    if (payload.type === 'flow_scored') {
+      const ev = payload.data;
+      pushChartPoint(ev.severity);
+      setTrend(ev.risk_trend);
+      if (ev.is_anomaly) addAlertRow(ev);
+    }
+  };
+}
+
+async function checkUrl() {
+  const url = document.getElementById('urlInput').value.trim();
+  const result = document.getElementById('urlResult');
+  if (!url) return;
+  result.textContent = 'Fetching...';
+  try {
+    const res = await fetch(BACKEND_HTTP + '/analyze-url', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url})
+    });
+    const data = await res.json();
+    if (data.error) { result.innerHTML = `<span class="sev-high">${data.error}</span>`; return; }
+    if (data.fetch_error) { result.innerHTML = `<span class="sev-high">Fetch failed: ${data.fetch_error}</span>`; return; }
+    const v = data.verdict;
+    const cls = v.is_anomaly ? 'sev-high' : 'sev-low';
+    result.innerHTML = `<span class="${cls}">${v.is_anomaly ? 'ANOMALOUS' : 'normal'}</span>
+      (severity ${v.severity}) — status ${data.status_code}, ${data.response_time_ms}ms,
+      HSTS:${data.has_hsts} CSP:${data.has_csp} X-Frame:${data.has_xframe},
+      cert expires in ${data.cert_days_remaining}d`;
+  } catch (e) {
+    result.innerHTML = `<span class="sev-high">Request failed — is the backend running?</span>`;
+  }
+}
+
+connect();
+setInterval(refreshStats, 1500);
+</script>
+</body>
+</html>
